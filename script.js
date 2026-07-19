@@ -140,6 +140,7 @@
   let targetTime = 0;
   let currentTime = 0;
   let activeIndex = -1;
+  let lastSeekAt = 0;
 
   // Respected everywhere motion is optional: the eased scroll, the trailing
   // cursor, the grain flicker, and the caption drift all skip themselves so a
@@ -249,10 +250,23 @@
       captionsWrap.style.transform = `translateY(${lag * 8}px)`;
     }
 
-    if (video.readyState >= 1 && !video.seeking && !isNaN(currentTime)) {
+    // On localhost a seek resolves in ~0ms, so waiting for !video.seeking
+    // before writing again is invisible. Over a real network, a seek to an
+    // unbuffered range costs a full round trip -- if we still wait for that
+    // one seek to resolve before ever issuing another, the target can race
+    // far ahead while the video sits frozen, and it can never catch up
+    // (looks exactly like scrubbing "not working"). Past a short grace
+    // window, re-target to the latest position anyway rather than queue
+    // behind a stale seek -- browsers redirect an in-flight seek to a new
+    // currentTime rather than queuing both.
+    const seekStuck = video.seeking && (time - lastSeekAt) > 250;
+    if (video.readyState >= 1 && (!video.seeking || seekStuck) && !isNaN(currentTime)) {
       const diff = Math.abs(video.currentTime - currentTime);
       if (diff > 0.01) {
-        try { video.currentTime = currentTime; } catch (e) {}
+        try {
+          video.currentTime = currentTime;
+          lastSeekAt = time;
+        } catch (e) {}
       }
     }
     requestAnimationFrame(render);
@@ -279,11 +293,20 @@
     loaderPct.textContent = Math.round(clamped) + '%';
   }
 
+  function bufferedFraction() {
+    if (!video.buffered.length || !duration) return 0;
+    return video.buffered.end(video.buffered.length - 1) / duration;
+  }
+
   function updateBufferProgress() {
     if (loaderDone || !video.buffered.length || !duration) return;
-    const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-    const pct = (bufferedEnd / duration) * 100;
-    setLoaderPct(Math.min(96, pct));
+    setLoaderPct(Math.min(96, bufferedFraction() * 100));
+    // Over a real network a seek to an unbuffered range costs a full round
+    // trip -- revealing the page on the browser's early `canplay` signal
+    // (enough to start playback, nowhere near enough to scrub the whole
+    // 154s timeline) is fine on localhost but stutters badly once real
+    // latency is involved. Wait for a meaningful chunk to be cached instead.
+    if (bufferedFraction() >= 0.15) hideLoader();
   }
 
   function hideLoader() {
@@ -312,22 +335,20 @@
   });
 
   video.addEventListener('progress', updateBufferProgress);
-  // Enough buffered to start scrubbing smoothly -- don't make the visitor wait
-  // for the entire file to download before the page is usable.
-  video.addEventListener('canplay', hideLoader, { once: true });
+  // canplaythrough is a strong "won't need to stall" signal on its own; the
+  // weaker canplay is intentionally NOT bound here -- see updateBufferProgress.
   video.addEventListener('canplaythrough', hideLoader, { once: true });
 
-  // Safety: if nothing has buffered enough to play by now, treat it as a
-  // stalled/failed load rather than silently dropping the visitor onto a
-  // black screen -- otherwise a slow connection looks indistinguishable
-  // from a broken page.
+  // Safety, two-stage: at 6s, a video that hasn't even buffered current-frame
+  // data (readyState < 2) is almost certainly broken, not just slow -- show
+  // the fallback. One that's still progressing but hasn't hit the 15% scrub
+  // threshold yet gets more time (up to 20s total) rather than being forced
+  // onto a page it can't scrub smoothly; past that, reveal anyway rather than
+  // leave the visitor on the loader forever.
   setTimeout(() => {
-    if (video.readyState < 2) {
-      showVideoFallback();
-    } else {
-      hideLoader();
-    }
+    if (video.readyState < 2) showVideoFallback();
   }, 6000);
+  setTimeout(hideLoader, 20000);
 
   // ---------- Schedule a Visit modal ----------
   let modalReturnFocus = null;
