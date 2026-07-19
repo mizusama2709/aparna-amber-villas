@@ -301,7 +301,7 @@ body{
   content:'';
   position:absolute;
   inset:0;
-  background:linear-gradient(to top, rgba(10,10,8,0.62) 0%, rgba(10,10,8,0.3) 42%, transparent 78%);
+  background:linear-gradient(to top, rgba(10,10,8,0.32) 0%, rgba(10,10,8,0.1) 30%, transparent 55%);
 }
 
 .caption{
